@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# Node
+node_modules/
+dist/
+.next/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data & models（默认不入库，按需 git lfs）
+data/processed/
+data/raw/
+*.bin
+*.pt
+*.onnx
+*.gguf
+
+# Logs
+logs/
+*.log
+
+# Local artifacts
+.cache/
+tmp/
+
+# === 隐私 / 机密 / 比赛材料：禁止上 GitHub ===
+# 比赛交付物（含报名截图/团队联系方式/未发布材料）
+deliverables/
+# 标注数据（含人脸/车牌/真实场景画面）
+data/labels/
+data/synthetic/
+# 报名 / 资质材料 / 内部文档
+docs/00-overview/team.md
+docs/02-submission/
+*.pdf
+*.pptx
+*.docx
+*.zip
+*.mp4
+*.mov
+*.avi
+# 截图
+assets/screenshots/
+assets/mockups/
+# 模型权重
+*.weights
+*.pth
+*.safetensors
+# 飞书临时文件
+.cicc-tmp.json
+.move.json
+.checklist.md
+.n.json
+.o.txt
+.out.txt
+.resp.json
