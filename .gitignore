@@ -45,7 +45,8 @@ data/labels/
 data/synthetic/
 # 报名 / 资质材料 / 内部文档
 docs/00-overview/team.md
-docs/02-submission/
+docs/02-submission/*
+!docs/02-submission/deliverable-ownership.md
 *.pdf
 *.pptx
 *.docx
