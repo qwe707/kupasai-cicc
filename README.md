@@ -72,6 +72,10 @@ deliverables/          打包后的提交物
 
 详见 `docs/00-overview/feishu-workspace.md`。
 
-## 6. 合规与原创承诺
+## 6. Git 协作规范
+
+分支管理、Pull Request、rebase 与 `main` 保护规则见 `docs/00-overview/git-workflow.md`。
+
+## 7. 合规与原创承诺
 
 参赛项目须为团队原创，严禁抄袭与侵权；所涉及数据须遵守数据安全与合规要求。
