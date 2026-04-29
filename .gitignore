@@ -69,3 +69,6 @@ assets/mockups/
 .o.txt
 .out.txt
 .resp.json
+
+# feature/setup-yolo-env相关不上传文件
+private-data/
