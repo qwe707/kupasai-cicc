@@ -85,7 +85,21 @@ git push --force-with-lease
 Settings → Rules → Rulesets
 ```
 
-建议对 `main` 开启：
+点击：
+
+```text
+New ruleset → New branch ruleset
+```
+
+基础配置：
+
+| 项 | 值 |
+| --- | --- |
+| Ruleset name | `protect-main` |
+| Enforcement status | `Active` |
+| Target branches | Include by pattern: `main` |
+
+建议开启：
 
 | 设置 | 建议 |
 | --- | --- |
@@ -98,9 +112,52 @@ Settings → Rules → Rulesets
 
 这样可以避免队员误 push 到 `main` 或误删主分支。
 
+如果 GitHub 页面是旧版，也可以走：
+
+```text
+Settings → Branches → Add branch protection rule
+```
+
+`Branch name pattern` 填 `main`，然后开启同样的 PR、approval、linear history、block force pushes 和 deletion protection。
+
 ---
 
-## 5. 不允许提交的内容
+## 5. 添加协作者
+
+仓库负责人在 GitHub 页面设置：
+
+```text
+Settings → Collaborators and teams → Add people
+```
+
+建议权限：
+
+| 角色 | 权限 | 说明 |
+| --- | --- | --- |
+| 普通队员 | `Write` | 可以 push 自己的分支、开 PR |
+| 只查看资料的人 | `Read` | 只能查看和 clone |
+| 仓库负责人 | `Admin` | 管理设置、协作者、分支保护 |
+
+不建议给普通队员 `Admin` 权限，避免误改仓库规则或删除分支保护。
+
+邀请后，队友需要在 GitHub 通知或邮件里接受邀请，之后才能 push 分支。
+
+---
+
+## 6. 仓库初始化后检查清单
+
+| 检查项 | 目标状态 |
+| --- | --- |
+| `main` 分支保护 | 已开启，不能直接 push |
+| 协作者 | 队员已加入，普通队员为 `Write` 权限 |
+| PR 合并方式 | 建议保留 `Squash and merge` / `Rebase and merge` |
+| Force push | 对 `main` 禁止 |
+| Branch deletion | 对 `main` 禁止 |
+| Secrets / 数据 / 权重 | 不进 GitHub |
+
+---
+
+## 7. 不允许提交的内容
 
 以下内容不进 GitHub：
 
@@ -115,7 +172,7 @@ Settings → Rules → Rulesets
 
 ---
 
-## 6. 推荐提交信息
+## 8. 推荐提交信息
 
 | 类型 | 示例 |
 | --- | --- |
@@ -129,7 +186,7 @@ Settings → Rules → Rulesets
 
 ---
 
-## 7. 负责人合并流程
+## 9. 负责人合并流程
 
 负责人合并前检查：
 
@@ -155,7 +212,7 @@ git pull origin main
 
 ---
 
-## 8. 冲突处理原则
+## 10. 冲突处理原则
 
 1. 谁的分支产生冲突，谁先解决。
 2. 不确定时不要强行覆盖别人文件。
