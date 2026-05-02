@@ -5,5 +5,5 @@
 - `pipelines/` 标注数据集
 - `services/` 后端服务（FastAPI / 系统服务封装）
 - `evaluation/` 评估脚本与离线评测集
-- `yolo/` YOLO 模块(训练、检测、评估、导出、检测分流)
+- `yolo-service/` YOLO 模块(训练、检测、评估、导出、检测分流)
 

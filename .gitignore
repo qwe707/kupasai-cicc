@@ -71,4 +71,4 @@ assets/mockups/
 .resp.json
 
 # feature/setup-yolo-env相关不上传文件
-private-data/
+src/yolo-service/design/
