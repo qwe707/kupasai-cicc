@@ -13,6 +13,7 @@
 POST /detect/upload  ──── 上传文件提交任务
 POST /detect/local   ──── 本地路径提交任务
 GET  /tasks          ──── 查进度 / 查结果
+GET  /images/{task_id}/{filename}  ──── 查看标注图（直链）
 
 提交 → 后台线程 → 更新进度 → 写出标注图+JSON
                           
@@ -103,7 +104,7 @@ curl "http://localhost:8000/tasks?task_id=my_task_001"
         {"class_id": 0, "class_name": "person", "confidence": 0.927, "bbox_xyxy": [124.2, 198.8, 1090.2, 712.3]}
       ],
       "runtime": {"device": "cuda", "inference_ms": 19.4},
-      "predicts_img_url": "https://yolo.alice1.xyz/images/my_task_001/img1.jpg?type=annotated",
+      "predicts_img_url": "https://yolo.alice1.xyz/images/my_task_001/img1.jpg",
       "predicts_info_url": "https://yolo.alice1.xyz/tasks?task_id=my_task_001&file=img1.jpg"
     }
   ]
@@ -118,13 +119,13 @@ curl "http://localhost:8000/tasks?task_id=my_task_001&file=img1.jpg"
 
 返回该图片对应的完整检测 JSON（与 predicts_info 下的文件内容一致）。
 
-**查看标注图（?task_id）：**
+**查看标注图：**
 
 ```bash
-curl "https://yolo.alice1.xyz/images/img1.jpg?type=annotated&task_id=my_task_001"
+curl "https://yolo.alice1.xyz/images/my_task_001/img1.jpg"
 ```
 
-`task_id` 参数让 `GET /images/{filename}` 从 `predicts_img/{task_id}/` 下查找，不加则用旧的平坦路径。
+新增 `GET /images/{task_id}/{filename}` 端点，直接返回图片二进制，浏览器可直接打开显示。
 
 ## 3. 文件布局
 
@@ -154,7 +155,7 @@ data/
     {"class_id": 0, "class_name": "person", "confidence": 0.927, "bbox_xyxy": [124.2, 198.8, 1090.2, 712.3]}
   ],
   "runtime": {"device": "cuda", "inference_ms": 19.4},
-  "predicts_img_url": "https://yolo.alice1.xyz/images/{task_id}/img1.jpg?type=annotated",
+  "predicts_img_url": "https://yolo.alice1.xyz/images/{task_id}/img1.jpg",
   "predicts_info_url": "https://yolo.alice1.xyz/tasks?task_id={task_id}&file=img1.jpg"
 }
 ```
@@ -232,7 +233,7 @@ src/yolo/
 | `POST /upload` + `/upload/batch` | `POST /detect/upload`（文件上传合入任务提交） |
 | `POST /detect/batch` | 由后台线程自动批量处理 |
 | `GET /images` | `GET /tasks` |
-| `GET /images/{filename}` | `GET /tasks?task_id=&file=` 或直接挂载静态目录
+| `GET /images/{filename}` | `GET /images/{task_id}/{filename}`（直链） |
 
 ## 8. 验证清单
 

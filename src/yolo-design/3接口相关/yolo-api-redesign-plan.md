@@ -4,7 +4,7 @@
 
 **目标：** 将 5060Ti 上的 YOLO 检测服务 API 从单文件臃肿设计重构为异步任务体系：上传/本地路径双模式提交、后台批量 GPU 推理、进度查询、结果检索。
 
-**架构：** 将 `infer.py` 拆为 `infer.py`（路由）+ `detector.py`（推理核心 + 后台任务）+ `schemas.py`（数据模型），删除旧接口，新增 `POST /detect/upload`、`POST /detect/local`、`GET /tasks` 三个端点。
+**架构：** 将 `infer.py` 拆为 `infer.py`（路由）+ `detector.py`（推理核心 + 后台任务）+ `schemas.py`（数据模型），删除旧接口，新增 `POST /detect/upload`、`POST /detect/local`、`GET /tasks`、`GET /images/{task_id}/{filename}` 四个端点。
 
 **技术栈：** FastAPI / Ultralytics / CUDA / ThreadPoolExecutor
 
@@ -23,7 +23,7 @@
 修改后：
 ```
 ~/yolo-service/src/yolo/
-├── infer.py       ← 仅包含 FastAPI app + 3 个路由端点（~80 行）
+├── infer.py       ← 仅包含 FastAPI app + 4 个路由端点（~90 行）
 ├── detector.py    ← YOLO 推理 + 后台任务管理 + 进度表（~100 行）
 └── schemas.py     ← Pydantic 请求/响应模型（~40 行）
 ```
@@ -191,9 +191,9 @@ def scan_info_files(task_id: str) -> List[str]:
     return result
 
 def _build_public_url(task_id: str, filename: str, type: str) -> str:
-    base = "https://yolo.alice1.xyz"
+    base = os.getenv("PUBLIC_URL", "https://your-domain.example.com")
     if type == "img":
-        return f"{base}/tasks?task_id={task_id}&file={filename}&type=annotated"
+        return f"{base}/images/{task_id}/{filename}"
     return f"{base}/tasks?task_id={task_id}&file={filename}"
 
 def run_detection(task_id: str):
@@ -435,6 +435,23 @@ async def get_tasks(
         "status": "done",
         "results": results,
     }
+
+# ---------------------------------------------------------------------------
+# GET /images/{task_id}/{filename} — 查看标注图（直链）
+# ---------------------------------------------------------------------------
+
+@app.get("/images/{task_id}/{filename}")
+async def get_task_image(task_id: str, filename: str):
+    img_path = os.path.join(detector.OUTPUT_IMG_DIR, task_id, filename)
+    if not os.path.isfile(img_path):
+        raise HTTPException(404, "Image not found.")
+    media_type, _ = mimetypes.guess_type(img_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+    return FileResponse(img_path, media_type=media_type, headers={
+        "Content-Disposition": "inline",
+        "Cache-Control": "public, max-age=3600",
+    })
 ```
 
 - [ ] **步骤 3：验证语法**
@@ -475,6 +492,7 @@ docker run -d \
   --network host \
   --gpus all \
   --restart always \
+  -e PUBLIC_URL="https://yolo.alice1.xyz" \
   -v ~/yolo-service/models:/models \
   -v ~/yolo-service/data:/data \
   yolo-api:async
@@ -540,10 +558,10 @@ curl -s "http://127.0.0.1:8000/tasks?task_id=test_001&file=test.jpg" | python3 -
 
 预期：返回该图片的检测结果 JSON
 
-- [ ] **⑤ 查看标注图：**
+- [ ] **⑤ 查看标注图（直链）：**
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8000/tasks?task_id=test_001&file=test.jpg&type=annotated"
+curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8000/images/test_001/test.jpg"
 ```
 
 预期：200
