@@ -296,6 +296,14 @@ from . import detector
 
 app = FastAPI(title="YOLOv11m Detection Service (Async)")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],        # 前端域名，上线时替换
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ---------------------------------------------------------------------------
 # POST /detect/upload — 上传文件提交任务
 # ---------------------------------------------------------------------------
