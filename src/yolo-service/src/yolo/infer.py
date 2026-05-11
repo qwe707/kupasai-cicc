@@ -13,18 +13,30 @@ from . import detector
 
 app = FastAPI(title="YOLOv11m Detection Service (Async)")
 
+# 跨域配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ---------------------------------------------------------------------------
 # POST /detect/upload — 上传文件提交任务
 # ---------------------------------------------------------------------------
 
 @app.post("/detect/upload")
-async def detect_upload(task_id: str = Query(...), files: list[UploadFile] = File(...)):
+async def detect_upload(
+    task_id: str = Query(...),
+    focus_classes: str = Query("0"),
+    files: list[UploadFile] = File(...),
+):
     if not task_id:
         raise HTTPException(400, "task_id is required.")
     if not files:
         raise HTTPException(400, "At least one file is required.")
 
-    # 创建任务输入目录
     input_dir = os.path.join(detector.INPUT_DIR, task_id)
     os.makedirs(input_dir, exist_ok=True)
 
@@ -47,8 +59,8 @@ async def detect_upload(task_id: str = Query(...), files: list[UploadFile] = Fil
     if saved_count == 0:
         raise HTTPException(400, "No valid images were uploaded.")
 
-    detector.init_task(task_id, saved_count)
-    detector.submit_task(task_id)
+    detector.init_task(task_id, saved_count, focus_classes)
+    detector.submit_task(task_id, focus_classes)
 
     return {"task_id": task_id, "status": "accepted", "image_count": saved_count}
 
@@ -84,8 +96,8 @@ async def detect_local(req: schemas.LocalTaskRequest):
     if copied == 0:
         raise HTTPException(400, "No valid images could be copied.")
 
-    detector.init_task(req.task_id, copied)
-    detector.submit_task(req.task_id)
+    detector.init_task(req.task_id, copied, req.focus_classes)
+    detector.submit_task(req.task_id, req.focus_classes)
 
     return {"task_id": req.task_id, "status": "accepted", "image_count": copied}
 
@@ -99,12 +111,10 @@ async def get_tasks(
     file: str = Query(None),
     type: str = Query("info", regex="^(info|annotated)$"),
 ):
-    # 查全部任务
     if not task_id and not file:
         tasks = detector.list_tasks()
         return {"tasks": tasks, "count": len(tasks)}
 
-    # 查单张图片的 info JSON
     if task_id and file and type == "info":
         json_name = f"{Path(file).stem}.json"
         json_path = os.path.join(detector.OUTPUT_INFO_DIR, task_id, json_name)
@@ -113,7 +123,6 @@ async def get_tasks(
         with open(json_path) as f:
             return JSONResponse(content=json.load(f))
 
-    # 查看标注图
     if task_id and file and type == "annotated":
         img_path = os.path.join(detector.OUTPUT_IMG_DIR, task_id, file)
         if not os.path.isfile(img_path):
@@ -126,7 +135,6 @@ async def get_tasks(
             "Cache-Control": "public, max-age=3600",
         })
 
-    # 查任务状态/结果
     status = detector.get_task_status(task_id)
     if not status:
         raise HTTPException(404, f"Task '{task_id}' not found.")
@@ -140,7 +148,6 @@ async def get_tasks(
             "total": status["total"],
         }
 
-    # 返回完整结果
     info_files = sorted(detector.scan_info_files(task_id))
     results = []
     for fp in info_files:
@@ -152,3 +159,52 @@ async def get_tasks(
         "status": "done",
         "results": results,
     }
+
+# ---------------------------------------------------------------------------
+# GET /images/{task_id}/{filename} — 查看标注图（直链）
+# ---------------------------------------------------------------------------
+
+@app.get("/images/{task_id}/{filename}")
+async def get_task_image(task_id: str, filename: str):
+    img_path = os.path.join(detector.OUTPUT_IMG_DIR, task_id, filename)
+    if not os.path.isfile(img_path):
+        raise HTTPException(404, "Image not found.")
+    media_type, _ = mimetypes.guess_type(img_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+    return FileResponse(img_path, media_type=media_type, headers={
+        "Content-Disposition": "inline",
+        "Cache-Control": "public, max-age=3600",
+    })
+
+# ---------------------------------------------------------------------------
+# GET /stitches/{task_id}/{filename} — Agent 获取拼接图
+# ---------------------------------------------------------------------------
+
+@app.get("/stitches/{task_id}/{filename}")
+async def get_stitch(task_id: str, filename: str):
+    img_path = os.path.join(detector.STITCH_DIR, task_id, filename)
+    if not os.path.isfile(img_path):
+        raise HTTPException(404, "Stitch not found.")
+    media_type, _ = mimetypes.guess_type(img_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+    return FileResponse(img_path, media_type=media_type, headers={
+        "Content-Disposition": "inline",
+        "Cache-Control": "public, max-age=3600",
+    })
+
+# ---------------------------------------------------------------------------
+# POST /scores — Agent 回传评分，触发叠加
+# ---------------------------------------------------------------------------
+
+@app.post("/scores")
+async def receive_scores(req: schemas.ScoreRequest):
+    if not req.task_id or not req.file:
+        raise HTTPException(400, "task_id and file are required.")
+    file_stem = Path(req.file).stem
+    success = detector.overlay_scores(req.task_id, file_stem,
+                                       [{"index": s.index, "score": s.score} for s in req.scores])
+    if not success:
+        raise HTTPException(404, "Task/Image not found or already processed.")
+    return {"status": "ok", "file": req.file, "scores_applied": len(req.scores)}

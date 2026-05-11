@@ -11,6 +11,7 @@ from typing import List, Optional
 from ultralytics import YOLO
 from PIL import Image
 import cv2
+import math
 import numpy as np
 
 MODEL_PATH = "/models/yolo11m.pt"
@@ -22,16 +23,19 @@ except Exception as e:
 INPUT_DIR = "/data/input"
 OUTPUT_IMG_DIR = "/data/output/predicts_img"
 OUTPUT_INFO_DIR = "/data/output/predicts_info"
+STITCH_DIR = "/data/output/stitches"
+FINAL_DIR = "/data/output/final"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 _executor = ThreadPoolExecutor(max_workers=1)
 _task_progress: dict[str, dict] = {}
 
-def init_task(task_id: str, total: int):
+def init_task(task_id: str, total: int, focus_classes: str = "0"):
     _task_progress[task_id] = {
         "status": "accepted", "total": total,
         "completed": 0, "progress": 0,
+        "focus_classes": focus_classes,
     }
 
 def update_progress(task_id: str, completed: int):
@@ -93,13 +97,12 @@ def scan_info_files(task_id: str) -> List[str]:
     return result
 
 def _build_public_url(task_id: str, filename: str, type: str) -> str:
-    # 使用前请通过 PUBLIC_URL 环境变量替换为自己的公网地址
     base = os.getenv("PUBLIC_URL", "https://your-domain.example.com")
     if type == "img":
-        return f"{base}/tasks?task_id={task_id}&file={filename}&type=annotated"
+        return f"{base}/images/{task_id}/{filename}"
     return f"{base}/tasks?task_id={task_id}&file={filename}"
 
-def run_detection(task_id: str):
+def run_detection(task_id: str, focus_classes: str = "0"):
     _task_progress[task_id]["status"] = "running"
     image_paths = scan_input_images(task_id)
     if not image_paths:
@@ -155,7 +158,164 @@ def run_detection(task_id: str):
 
         update_progress(task_id, i + 1)
 
+    cls_list = [int(x.strip()) for x in focus_classes.split(",")]
+    stitch_crops(task_id, focus_classes=cls_list)
+
     _task_progress[task_id]["status"] = "done"
 
-def submit_task(task_id: str):
-    asyncio.get_event_loop().run_in_executor(_executor, run_detection, task_id)
+def _build_stitch_url(task_id: str, filename: str) -> str:
+    base = os.getenv("PUBLIC_URL", "https://your-domain.example.com")
+    return f"{base}/stitches/{task_id}/{filename}"
+
+def stitch_crops(task_id: str, focus_classes: list[int]):
+    """检测完成后裁剪指定类别目标并水平拼接为一张图"""
+    info_dir = os.path.join(OUTPUT_INFO_DIR, task_id)
+    stitch_dir = os.path.join(STITCH_DIR, task_id)
+    os.makedirs(stitch_dir, exist_ok=True)
+
+    for json_file in sorted(os.listdir(info_dir)):
+        if not json_file.endswith(".json"):
+            continue
+        fp = os.path.join(info_dir, json_file)
+        with open(fp) as f:
+            data = json.load(f)
+
+        targets = [(i, d) for i, d in enumerate(data["detections"])
+                   if d["class_id"] in focus_classes]
+        if not targets:
+            continue
+
+        orig_img = cv2.imread(data["input_path"])
+        crops = []
+        for idx, det in targets:
+            x1, y1, x2, y2 = map(int, det["bbox_xyxy"])
+            x1, y1 = max(0, x1), max(0, y1)
+            x2 = min(orig_img.shape[1], x2)
+            y2 = min(orig_img.shape[0], y2)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            crop = orig_img[y1:y2, x1:x2].copy()
+            label = f"{det['class_name']} (#{idx})"
+            crops.append((crop, label))
+
+        if not crops:
+            continue
+        if len(crops) == 1:
+            c, label = crops[0]
+            tw, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            bar = 255 * np.ones((26, max(c.shape[1], tw + 16), 3), dtype=np.uint8)
+            cv2.putText(bar, label, ((bar.shape[1] - tw) // 2, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            stitch = cv2.vconcat([c, bar])
+        else:
+            # 动态网格 + crop 填满：按中位高度等比缩放 → 贪心逐行填 → 行内等比缩放到同宽
+            imgs = [c for c, _ in crops]
+            target_h = int(np.median([c.shape[0] for c in imgs]))
+            scaled = []
+            for c, label in crops:
+                h, w = c.shape[:2]
+                new_w = max(1, int(w * target_h / h))
+                cr = cv2.resize(c, (new_w, target_h))
+                scaled.append((cr, label))
+
+            imgs = [c for c, _ in scaled]
+            # 动态算行宽：最终图纵横比接近 4:3
+            total_area = sum(c.shape[0] * c.shape[1] for c in imgs)
+            target_ratio = 4 / 3
+            ideal_w = int(math.sqrt(total_area * target_ratio))
+            max_width = max(target_h * 2, min(ideal_w, target_h * 12))
+
+            rows, cur_row, cur_w = [], [], 0
+            for c, label in scaled:
+                if cur_w + c.shape[1] > max_width and cur_row:
+                    rows.append(cur_row)
+                    cur_row, cur_w = [(c, label)], c.shape[1]
+                else:
+                    cur_row.append((c, label))
+                    cur_w += c.shape[1]
+            if cur_row:
+                rows.append(cur_row)
+
+            # 逐行填满 + 标签条，贴到 numpy 画布
+            LABEL_BAR_H = 28
+            cells = []
+            row_heights = []
+            for ri, row in enumerate(rows):
+                imgs_in_row = [c for c, _ in row]
+                row_w = sum(c.shape[1] for c in imgs_in_row)
+                s = max_width / row_w
+                rh = int(target_h * s)
+                row_heights.append(rh)
+                widths = [int(c.shape[1] * s) for c in imgs_in_row]
+                delta = max_width - sum(widths)
+                if delta != 0 and widths:
+                    widths[-1] += delta
+                x = 0
+                for (c, label), cw in zip(row, widths):
+                    cr = cv2.resize(c, (max(1, cw), max(1, rh)))
+                    cells.append((ri, x, cr, label, cw))
+                    x += cw
+
+            total_h = sum(row_heights) + len(rows) * LABEL_BAR_H
+            stitch = 255 * np.ones((max(1, total_h), max_width, 3), dtype=np.uint8)
+            y = 0
+            for ri, rh in enumerate(row_heights):
+                # 贴 crop 行
+                for (cell_ri, cell_x, cell_img, _, _) in cells:
+                    if cell_ri != ri:
+                        continue
+                    h, w = cell_img.shape[:2]
+                    stitch[y:y + rh, cell_x:cell_x + w] = cell_img
+                y += rh
+                # 贴标签条
+                for (cell_ri, cell_x, _, label, cell_w) in cells:
+                    if cell_ri != ri:
+                        continue
+                    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+                    tx = cell_x + (cell_w - tw) // 2
+                    cv2.putText(stitch[y:y + LABEL_BAR_H, :], label,
+                                (max(0, tx), 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+                y += LABEL_BAR_H
+
+        stem = Path(json_file).stem
+        stitch_path = os.path.join(stitch_dir, f"{stem}.jpg")
+        cv2.imwrite(stitch_path, stitch)
+
+        # 回写 stitch_url 到 JSON
+        data["stitch_url"] = _build_stitch_url(task_id, f"{stem}.jpg")
+        with open(fp, "w") as f:
+            json.dump(data, f, indent=2)
+
+def overlay_scores(task_id: str, file_stem: str, scores: list[dict]):
+    """将评分叠加到标注图上，输出最终图到 FINAL_DIR"""
+    json_path = os.path.join(OUTPUT_INFO_DIR, task_id, f"{file_stem}.json")
+    img_path = os.path.join(OUTPUT_IMG_DIR, task_id, f"{file_stem}.jpg")
+    if not os.path.isfile(json_path) or not os.path.isfile(img_path):
+        return False
+
+    with open(json_path) as f:
+        data = json.load(f)
+
+    for s in scores:
+        idx = s["index"]
+        if idx < len(data["detections"]):
+            data["detections"][idx]["score"] = s["score"]
+
+    with open(json_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    img = cv2.imread(img_path)
+    for det in data["detections"]:
+        if det.get("score") is not None:
+            x1, y1 = int(det["bbox_xyxy"][0]), int(det["bbox_xyxy"][1])
+            label = f"{det['class_name']}: {det['score']}"
+            cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6, (0, 255, 0), 2)
+
+    final_dir = os.path.join(FINAL_DIR, task_id)
+    os.makedirs(final_dir, exist_ok=True)
+    cv2.imwrite(os.path.join(final_dir, f"{file_stem}.jpg"), img)
+    return True
+
+def submit_task(task_id: str, focus_classes: str = "0"):
+    asyncio.get_event_loop().run_in_executor(_executor, run_detection, task_id, focus_classes)
