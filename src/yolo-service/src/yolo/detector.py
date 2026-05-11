@@ -100,6 +100,8 @@ def _build_public_url(task_id: str, filename: str, type: str) -> str:
     base = os.getenv("PUBLIC_URL", "https://your-domain.example.com")
     if type == "img":
         return f"{base}/images/{task_id}/{filename}"
+    if type == "final":
+        return f"{base}/final/{task_id}/{filename}"
     return f"{base}/tasks?task_id={task_id}&file={filename}"
 
 def run_detection(task_id: str, focus_classes: str = "0"):
@@ -195,17 +197,20 @@ def stitch_crops(task_id: str, focus_classes: list[int]):
             if x2 <= x1 or y2 <= y1:
                 continue
             crop = orig_img[y1:y2, x1:x2].copy()
-            label = f"{det['class_name']} (#{idx})"
+            label = str(idx)
             crops.append((crop, label))
 
         if not crops:
             continue
         if len(crops) == 1:
             c, label = crops[0]
-            tw, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-            bar = 255 * np.ones((26, max(c.shape[1], tw + 16), 3), dtype=np.uint8)
-            cv2.putText(bar, label, ((bar.shape[1] - tw) // 2, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            bar_h = 8
+            fs = 0.3
+            ft = 1
+            (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, ft)
+            bar = 255 * np.ones((bar_h, max(c.shape[1], tw + 12), 3), dtype=np.uint8)
+            cv2.putText(bar, label, ((bar.shape[1] - tw) // 2, 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), ft)
             stitch = cv2.vconcat([c, bar])
         else:
             # 动态网格 + crop 填满：按中位高度等比缩放 → 贪心逐行填 → 行内等比缩放到同宽
@@ -237,45 +242,69 @@ def stitch_crops(task_id: str, focus_classes: list[int]):
                 rows.append(cur_row)
 
             # 逐行填满 + 标签条，贴到 numpy 画布
-            LABEL_BAR_H = 28
+            GAP = 2  # crop 间间隔像素
             cells = []
             row_heights = []
+            label_bar_heights = []
+            font_params = []
             for ri, row in enumerate(rows):
                 imgs_in_row = [c for c, _ in row]
                 row_w = sum(c.shape[1] for c in imgs_in_row)
                 s = max_width / row_w
+                if len(row) == 1:
+                    s = min(s, 2.0)  # 单格行最多放大 2x，避免撑爆
                 rh = int(target_h * s)
                 row_heights.append(rh)
                 widths = [int(c.shape[1] * s) for c in imgs_in_row]
                 delta = max_width - sum(widths)
                 if delta != 0 and widths:
-                    widths[-1] += delta
+                    # 逐格分摊，每格最多 +1，不让末格吸收全部误差
+                    i = 0
+                    while delta > 0 and i < len(widths):
+                        widths[i] += 1
+                        delta -= 1
+                        i += 1
+                    while delta < 0 and i < len(widths):
+                        widths[i] -= 1
+                        delta += 1
+                        i += 1
+                row_cells = []
                 x = 0
-                for (c, label), cw in zip(row, widths):
+                for j, ((c, label), cw) in enumerate(zip(row, widths)):
                     cr = cv2.resize(c, (max(1, cw), max(1, rh)))
-                    cells.append((ri, x, cr, label, cw))
-                    x += cw
+                    row_cells.append((x, cr, label, cw))
+                    x += cw + GAP
+                bar_h = 8
+                row_fs = 0.3
+                thick = 1
+                text_y = 7
+                label_bar_heights.append(bar_h)
+                font_params.append((row_fs, thick, text_y))
+                cells.append(row_cells)
 
-            total_h = sum(row_heights) + len(rows) * LABEL_BAR_H
-            stitch = 255 * np.ones((max(1, total_h), max_width, 3), dtype=np.uint8)
+            total_h = sum(row_heights) + sum(label_bar_heights)
+            canvas_w = max(
+                int(cell_x + cell_w) for ri2, row_cells2 in enumerate(cells)
+                for cell_x, _, _, cell_w in row_cells2
+            ) if cells else max_width
+            stitch = 255 * np.ones((max(1, total_h), canvas_w, 3), dtype=np.uint8)
             y = 0
             for ri, rh in enumerate(row_heights):
+                row_cells = cells[ri]
                 # 贴 crop 行
-                for (cell_ri, cell_x, cell_img, _, _) in cells:
-                    if cell_ri != ri:
-                        continue
+                for (cell_x, cell_img, _, _) in row_cells:
                     h, w = cell_img.shape[:2]
                     stitch[y:y + rh, cell_x:cell_x + w] = cell_img
                 y += rh
                 # 贴标签条
-                for (cell_ri, cell_x, _, label, cell_w) in cells:
-                    if cell_ri != ri:
-                        continue
-                    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+                bar_h = label_bar_heights[ri]
+                row_fs, font_thick, text_y = font_params[ri]
+                for (cell_x, _, label, cell_w) in row_cells:
+                    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, row_fs, font_thick)
                     tx = cell_x + (cell_w - tw) // 2
-                    cv2.putText(stitch[y:y + LABEL_BAR_H, :], label,
-                                (max(0, tx), 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
-                y += LABEL_BAR_H
+                    cv2.putText(stitch[y:y + bar_h, :], label,
+                                (max(0, tx), text_y), cv2.FONT_HERSHEY_SIMPLEX, row_fs, (0, 0, 0), font_thick)
+                y += bar_h
 
         stem = Path(json_file).stem
         stitch_path = os.path.join(stitch_dir, f"{stem}.jpg")
@@ -287,10 +316,9 @@ def stitch_crops(task_id: str, focus_classes: list[int]):
             json.dump(data, f, indent=2)
 
 def overlay_scores(task_id: str, file_stem: str, scores: list[dict]):
-    """将评分叠加到标注图上，输出最终图到 FINAL_DIR"""
+    """用原图 + bbox + 评分重画检测框，输出最终图到 FINAL_DIR"""
     json_path = os.path.join(OUTPUT_INFO_DIR, task_id, f"{file_stem}.json")
-    img_path = os.path.join(OUTPUT_IMG_DIR, task_id, f"{file_stem}.jpg")
-    if not os.path.isfile(json_path) or not os.path.isfile(img_path):
+    if not os.path.isfile(json_path):
         return False
 
     with open(json_path) as f:
@@ -304,17 +332,35 @@ def overlay_scores(task_id: str, file_stem: str, scores: list[dict]):
     with open(json_path, "w") as f:
         json.dump(data, f, indent=2)
 
-    img = cv2.imread(img_path)
+    # 读原图（不是 YOLO 标注图，避免标签重叠）
+    orig_img = cv2.imread(data["input_path"])
+    if orig_img is None:
+        return False
+
+    # 颜色映射：按 class_id 分配不同颜色
+    COLORS = [
+        (0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0),
+        (255, 0, 255), (0, 255, 255), (128, 255, 0), (255, 128, 0),
+        (0, 128, 255), (128, 0, 255), (255, 0, 128), (0, 255, 128),
+        (200, 200, 0), (200, 0, 200), (0, 200, 200),
+    ]
+
     for det in data["detections"]:
-        if det.get("score") is not None:
-            x1, y1 = int(det["bbox_xyxy"][0]), int(det["bbox_xyxy"][1])
-            label = f"{det['class_name']}: {det['score']}"
-            cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6, (0, 255, 0), 2)
+        color = COLORS[det["class_id"] % len(COLORS)]
+        x1, y1, x2, y2 = [int(v) for v in det["bbox_xyxy"]]
+        cv2.rectangle(orig_img, (x1, y1), (x2, y2), color, 2)
+        sc = det.get("score")
+        label = f"{det['class_name']} {det['confidence']:.2f}"
+        if sc is not None:
+            label += f" score:{sc}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(orig_img, (x1, y1 - th - 5), (x1 + tw + 4, y1), color, -1)
+        cv2.putText(orig_img, label, (x1 + 2, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 0, 0), 1)
 
     final_dir = os.path.join(FINAL_DIR, task_id)
     os.makedirs(final_dir, exist_ok=True)
-    cv2.imwrite(os.path.join(final_dir, f"{file_stem}.jpg"), img)
+    cv2.imwrite(os.path.join(final_dir, f"{file_stem}.jpg"), orig_img)
     return True
 
 def submit_task(task_id: str, focus_classes: str = "0"):

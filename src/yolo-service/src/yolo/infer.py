@@ -207,4 +207,44 @@ async def receive_scores(req: schemas.ScoreRequest):
                                        [{"index": s.index, "score": s.score} for s in req.scores])
     if not success:
         raise HTTPException(404, "Task/Image not found or already processed.")
-    return {"status": "ok", "file": req.file, "scores_applied": len(req.scores)}
+    final_url = detector._build_public_url(req.task_id, f"{file_stem}.jpg", "final")
+    return {"status": "ok", "file": req.file, "scores_applied": len(req.scores), "final_url": final_url}
+
+# ---------------------------------------------------------------------------
+# POST /scores/batch — 批量回传评分
+# ---------------------------------------------------------------------------
+
+@app.post("/scores/batch")
+async def receive_scores_batch(req: schemas.BatchScoreRequest):
+    results = []
+    for item in req.items:
+        file_stem = Path(item.file).stem
+        success = detector.overlay_scores(
+            req.task_id, file_stem,
+            [{"index": s.index, "score": s.score} for s in item.scores]
+        )
+        final_url = detector._build_public_url(req.task_id, f"{file_stem}.jpg", "final") if success else None
+        results.append({
+            "file": item.file,
+            "status": "ok" if success else "failed",
+            "scores_applied": len(item.scores) if success else 0,
+            "final_url": final_url,
+        })
+    return {"task_id": req.task_id, "results": results}
+
+# ---------------------------------------------------------------------------
+# GET /final/{task_id}/{filename} — 查看最终图（评分叠加后）
+# ---------------------------------------------------------------------------
+
+@app.get("/final/{task_id}/{filename}")
+async def get_final_image(task_id: str, filename: str):
+    img_path = os.path.join(detector.FINAL_DIR, task_id, filename)
+    if not os.path.isfile(img_path):
+        raise HTTPException(404, "Final image not found.")
+    media_type, _ = mimetypes.guess_type(img_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+    return FileResponse(img_path, media_type=media_type, headers={
+        "Content-Disposition": "inline",
+        "Cache-Control": "public, max-age=3600",
+    })

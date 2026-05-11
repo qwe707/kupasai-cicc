@@ -48,3 +48,11 @@ class ScoreRequest(BaseModel):
     task_id: str
     file: str        # 图片文件名 (如 "img1.jpg")
     scores: list[ScoreItem]
+
+class FileScores(BaseModel):
+    file: str        # 图片文件名
+    scores: list[ScoreItem]
+
+class BatchScoreRequest(BaseModel):
+    task_id: str
+    items: list[FileScores]
