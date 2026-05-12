@@ -5,7 +5,6 @@ class LocalTaskRequest(BaseModel):
     """POST /detect/local 的请求体"""
     task_id: str
     image_paths: List[str]
-    focus_classes: str = "0"   # 关注类别，逗号分隔，如 "54,74"
 
 class TaskStatusResponse(BaseModel):
     task_id: str
@@ -39,20 +38,3 @@ class TaskResultResponse(BaseModel):
     task_id: str
     status: str
     results: Optional[List[ImageResult]] = None
-
-class ScoreItem(BaseModel):
-    index: int       # 目标在 detections 列表中的序号 (从 0 开始)
-    score: int       # 评分值
-
-class ScoreRequest(BaseModel):
-    task_id: str
-    file: str        # 图片文件名 (如 "img1.jpg")
-    scores: list[ScoreItem]
-
-class FileScores(BaseModel):
-    file: str        # 图片文件名
-    scores: list[ScoreItem]
-
-class BatchScoreRequest(BaseModel):
-    task_id: str
-    items: list[FileScores]
